@@ -1,69 +1,64 @@
-const PACOTES = {
-  video1: 29.90,
-  video3: 79.90,
-  video5: 129.90,
-  video10: 229.90
-};
-
-const SITE = "https://3-fotos-studio.celufixcomercioeservicos.workers.dev";
 
 export default {
   async fetch(request, env) {
+    const SITE = "https://3-fotos-studio.celufixcomercioeservicos.workers.dev";
     const origin = request.headers.get("Origin");
 
     const headers = {
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": origin === SITE ? SITE : "null",
+      "Access-Control-Allow-Origin": SITE,
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type"
     };
 
-    const resposta = (dados, status = 200) =>
-      new Response(JSON.stringify(dados), { status, headers });
+    const json = (data, status = 200) =>
+      new Response(JSON.stringify(data), { status, headers });
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers });
     }
 
     if (origin && origin !== SITE) {
-      return resposta({ erro: "Origem não autorizada." }, 403);
+      return json({ erro: "Site não autorizado." }, 403);
     }
 
     if (!env.MP_ACCESS_TOKEN) {
-      return resposta({ erro: "Token do Mercado Pago não configurado." }, 500);
+      return json({ erro: "Access Token não configurado no servidor." }, 500);
     }
 
     const url = new URL(request.url);
 
-    if (request.method === "GET" && url.pathname === "/") {
-      return resposta({
-        projeto: "3 Fotos Studio",
-        servidor: "ativo"
-      });
-    }
-
+    // CRIAR PIX
     if (request.method === "POST" && url.pathname === "/criar-pix") {
       try {
         const body = await request.json();
-        const valor = PACOTES[body.pacote];
+
+        const pacotes = {
+          video1: 29.90,
+          video3: 79.90,
+          video5: 129.90,
+          video10: 229.90
+        };
+
+        const valor = pacotes[body.pacote];
         const email = String(body.email || "").trim();
 
         if (!valor) {
-          return resposta({ erro: "Pacote inválido." }, 400);
+          return json({ erro: "Pacote inválido." }, 400);
         }
 
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-          return resposta({ erro: "E-mail inválido." }, 400);
+          return json({ erro: "E-mail inválido." }, 400);
         }
 
         const idempotencia = crypto.randomUUID();
 
-        const pagamento = await fetch(
+        const resposta = await fetch(
           "https://api.mercadopago.com/v1/orders",
           {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${env.MP_ACCESS_TOKEN}`,
+              "Authorization": `Bearer ${env.MP_ACCESS_TOKEN}`,
               "Content-Type": "application/json",
               "X-Idempotency-Key": idempotencia
             },
@@ -81,61 +76,92 @@ export default {
                   }
                 }]
               },
-              payer: { email }
+              payer: {
+                email: email
+              }
             })
           }
         );
 
-        const dados = await pagamento.json();
+        const dados = await resposta.json();
 
-        if (!pagamento.ok) {
-          return resposta({
-            erro: "Falha ao criar Pix.",
+        if (!resposta.ok) {
+          return json({
+            erro: "Mercado Pago recusou a criação do Pix.",
             detalhe: dados
-          }, pagamento.status);
+          }, resposta.status);
         }
 
-        const metodo = dados.transactions?.payments?.[0]?.payment_method || {};
+        const pagamento = dados.transactions?.payments?.[0];
+        const metodo = pagamento?.payment_method || {};
 
-        return resposta({
+        return json({
           pedido: dados.id,
+          order_id: dados.id,
+          valor: valor,
           status: dados.status,
-          valor,
+          status_pagamento: pagamento?.status,
           pix_copia_cola: metodo.qr_code || null,
           qr_code_base64: metodo.qr_code_base64 || null,
           link_pagamento: metodo.ticket_url || null
         }, 201);
 
       } catch (erro) {
-        return resposta({ erro: erro.message }, 500);
+        return json({
+          erro: "Falha ao gerar Pix.",
+          detalhe: erro.message
+        }, 500);
       }
     }
 
+    // CONSULTAR STATUS
     if (request.method === "GET" && url.pathname === "/status") {
-      const id = url.searchParams.get("order_id");
+      const orderId = url.searchParams.get("order_id");
 
-      if (!id) {
-        return resposta({ erro: "Informe o order_id." }, 400);
+      if (!orderId) {
+        return json({ erro: "Order ID não informado." }, 400);
       }
 
-      const consulta = await fetch(
-        `https://api.mercadopago.com/v1/orders/${encodeURIComponent(id)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${env.MP_ACCESS_TOKEN}`
+      try {
+        const resposta = await fetch(
+          "https://api.mercadopago.com/v1/orders/" +
+          encodeURIComponent(orderId),
+          {
+            headers: {
+              "Authorization": `Bearer ${env.MP_ACCESS_TOKEN}`
+            }
           }
+        );
+
+        const dados = await resposta.json();
+
+        if (!resposta.ok) {
+          return json({
+            erro: "Erro ao consultar pedido.",
+            detalhe: dados
+          }, resposta.status);
         }
-      );
 
-      const dados = await consulta.json();
+        const pagamento = dados.transactions?.payments?.[0];
 
-      return resposta({
-        pedido: dados.id,
-        status: dados.status || "indefinido",
-        detalhe: dados.status_detail || null
-      }, consulta.status);
+        return json({
+          order_id: dados.id,
+          status: dados.status,
+          status_pagamento: pagamento?.status || null,
+          detalhe: pagamento?.status_detail || dados.status_detail || null
+        });
+
+      } catch (erro) {
+        return json({
+          erro: "Falha na consulta.",
+          detalhe: erro.message
+        }, 500);
+      }
     }
 
-    return resposta({ erro: "Rota não encontrada." }, 404);
+    return json({
+      projeto: "3 Fotos Studio",
+      servidor: "ativo"
+    });
   }
 };
