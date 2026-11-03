@@ -1,0 +1,3 @@
+name = "3-fotos-pagamentos"
+main = "worker.js"
+compatibility_date = "2026-11-03"
